@@ -15,19 +15,25 @@ const fs = require('fs');
       timeout: 60000 
     });
 
-    // 1. Enter the postcode into the box seen in your screenshot
-    console.log("Entering postcode...");
-    const inputSelector = 'input[name="postcode"], input[placeholder*="postcode"]';
+    // 1. Focus and Type Postcode
+    console.log("Locating postcode box...");
+    const inputSelector = 'input[id="postcode-selector"], input[placeholder*="postcode"]';
     await page.waitForSelector(inputSelector);
-    await page.fill(inputSelector, '3000');
+    
+    await page.click(inputSelector); // Click first to focus
+    await page.waitForTimeout(1000); // Wait 1 second for the box to be ready
+    await page.type(inputSelector, '3000', { delay: 100 }); // Type slowly
+    console.log("Postcode entered.");
 
-    // 2. Click the 'COMPARE' button
-    console.log("Clicking Compare...");
-    await page.click('button:has-text("COMPARE")');
+    // 2. Click the Compare Button
+    console.log("Clicking the Compare button...");
+    // We'll try to click the button based on the teal box we see in your screenshot
+    await page.click('button:has-text("COMPARE"), .postcode-selector-submit');
 
-    // 3. Wait for the new page to load the price results
-    console.log("Waiting for price results to appear...");
-    await page.waitForSelector('.annual-cost-value', { timeout: 60000 });
+    // 3. Wait for the Price Results
+    console.log("Waiting for results page to load...");
+    // Increased timeout to 90 seconds because the transition can be slow
+    await page.waitForSelector('.annual-cost-value', { timeout: 90000 });
 
     const latestData = await page.evaluate(() => {
       const cards = Array.from(document.querySelectorAll('div[class*="plan-card-v2_"]'));
@@ -40,7 +46,6 @@ const fs = require('fs');
 
     console.log(`Success! Captured ${latestData.length} plans.`);
 
-    // 4. Save to CSV
     const csvRows = latestData.map(r => `"${r.timestamp}","${r.brand}",${r.price}`).join('\n');
     if (!fs.existsSync('data.csv')) {
       fs.writeFileSync('data.csv', 'Timestamp,Brand,Price\n');
@@ -48,8 +53,9 @@ const fs = require('fs');
     fs.appendFileSync('data.csv', csvRows + '\n');
 
   } catch (error) {
-    console.error("Scraper failed at this step:", error.message);
-    await page.screenshot({ path: 'error-at-postcode.png' }); 
+    console.error("Scraper failed:", error.message);
+    // Take a screenshot of exactly where it stopped
+    await page.screenshot({ path: 'failed-step.png' }); 
     process.exit(1);
   } finally {
     await browser.close();
