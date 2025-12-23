@@ -15,17 +15,18 @@ const fs = require('fs');
       timeout: 60000 
     });
 
-    // --- STEP: HANDLING THE POSTCODE PROMPT ---
-    const postcodeSelector = 'input[placeholder*="postcode"]';
-    if (await page.isVisible(postcodeSelector)) {
-        console.log("Postcode prompt found. Entering 3000...");
-        await page.fill(postcodeSelector, '3000');
-        await page.keyboard.press('Enter');
-        await page.waitForTimeout(5000); // Wait for results to load
-    }
+    // 1. Enter the postcode into the box seen in your screenshot
+    console.log("Entering postcode...");
+    const inputSelector = 'input[name="postcode"], input[placeholder*="postcode"]';
+    await page.waitForSelector(inputSelector);
+    await page.fill(inputSelector, '3000');
 
-    // Wait for the actual prices to appear after the postcode is processed
-    console.log("Waiting for prices to appear...");
+    // 2. Click the 'COMPARE' button
+    console.log("Clicking Compare...");
+    await page.click('button:has-text("COMPARE")');
+
+    // 3. Wait for the new page to load the price results
+    console.log("Waiting for price results to appear...");
     await page.waitForSelector('.annual-cost-value', { timeout: 60000 });
 
     const latestData = await page.evaluate(() => {
@@ -37,9 +38,9 @@ const fs = require('fs');
       });
     });
 
-    console.log(`Success! Scraped ${latestData.length} plans.`);
+    console.log(`Success! Captured ${latestData.length} plans.`);
 
-    // Save to CSV
+    // 4. Save to CSV
     const csvRows = latestData.map(r => `"${r.timestamp}","${r.brand}",${r.price}`).join('\n');
     if (!fs.existsSync('data.csv')) {
       fs.writeFileSync('data.csv', 'Timestamp,Brand,Price\n');
@@ -47,8 +48,8 @@ const fs = require('fs');
     fs.appendFileSync('data.csv', csvRows + '\n');
 
   } catch (error) {
-    console.error("Scraper failed:", error.message);
-    await page.screenshot({ path: 'error.png' }); // Takes a picture of what went wrong
+    console.error("Scraper failed at this step:", error.message);
+    await page.screenshot({ path: 'error-at-postcode.png' }); 
     process.exit(1);
   } finally {
     await browser.close();
