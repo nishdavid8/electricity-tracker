@@ -1,25 +1,41 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 
-async function setPostcode(page, selector, postcode) {
-  await page.waitForSelector(selector, { state: 'visible', timeout: 60000 });
+async function dismissOverlays(page) {
+  const buttons = [
+    'button:has-text("Accept")',
+    'button:has-text("I agree")',
+    'button:has-text("Allow")',
+    'button:has-text("Agree")'
+  ];
 
-  // -------- Attempt 1: Playwright fill ----------
+  for (const btn of buttons) {
+    try {
+      await page.click(btn, { timeout: 3000 });
+      console.log('✓ Overlay dismissed');
+      break;
+    } catch (_) {}
+  }
+}
+
+async function findPostcodeInput(page) {
+  return await page.waitForFunction(() => {
+    const input = Array.from(document.querySelectorAll('input')).find(i =>
+      i.type === 'text' &&
+      (
+        i.placeholder?.toLowerCase().includes('post') ||
+        i.name?.toLowerCase().includes('post') ||
+        i.id?.toLowerCase().includes('post')
+      )
+    );
+    return input || false;
+  }, { timeout: 60000 });
+}
+
+async function setPostcode(page, handle, postcode) {
+  // Attempt 1: Native setter (React-safe)
   try {
-    await page.locator(selector).fill(postcode);
-    await page.waitForTimeout(300);
-
-    const val = await page.$eval(selector, el => el.value);
-    if (val === postcode) {
-      console.log('✓ Postcode set via locator.fill');
-      return;
-    }
-  } catch (_) {}
-
-  // -------- Attempt 2: Native setter (React-safe) ----------
-  try {
-    await page.evaluate((sel, val) => {
-      const el = document.querySelector(sel);
+    await handle.evaluate((el, val) => {
       const setter = Object.getOwnPropertyDescriptor(
         window.HTMLInputElement.prototype,
         'value'
@@ -33,103 +49,80 @@ async function setPostcode(page, selector, postcode) {
       }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
       el.dispatchEvent(new Event('blur', { bubbles: true }));
-    }, selector, postcode);
+    }, postcode);
 
-    await page.waitForTimeout(300);
-
-    const val = await page.$eval(selector, el => el.value);
-    if (val === postcode) {
-      console.log('✓ Postcode set via native setter');
-      return;
-    }
+    console.log('✓ Postcode set via native setter');
+    return;
   } catch (_) {}
 
-  // -------- Attempt 3: Keyboard typing (human fallback) ----------
-  try {
-    await page.click(selector, { force: true });
-    await page.keyboard.press('Control+A');
-    await page.keyboard.type(postcode, { delay: 80 });
-
-    await page.waitForTimeout(300);
-
-    const val = await page.$eval(selector, el => el.value);
-    if (val === postcode) {
-      console.log('✓ Postcode set via keyboard typing');
-      return;
-    }
-  } catch (e) {
-    throw new Error(`Failed to set postcode: ${e.message}`);
-  }
-
-  throw new Error('All postcode entry attempts failed');
+  // Attempt 2: Keyboard fallback
+  await handle.click({ force: true });
+  await page.keyboard.press('Control+A');
+  await page.keyboard.type(postcode, { delay: 80 });
+  console.log('✓ Postcode set via keyboard fallback');
 }
 
 (async () => {
-  const browser = await chromium.launch({
-    headless: true
-    // For debugging:
-    // headless: false,
-    // slowMo: 50
-  });
+  const browser = await chromium.launch({ headless: true });
 
   const context = await browser.newContext({
+    locale: 'en-AU',
+    timezoneId: 'Australia/Melbourne',
+    geolocation: { latitude: -37.8136, longitude: 144.9631 },
+    permissions: ['geolocation'],
     userAgent:
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   });
 
   const page = await context.newPage();
 
-  // Capture browser console logs (critical for SPAs)
-  page.on('console', msg => {
-    console.log(`[browser:${msg.type()}] ${msg.text()}`);
-  });
+  page.on('console', msg =>
+    console.log(`[browser:${msg.type()}] ${msg.text()}`)
+  );
 
   try {
     console.log('1. Navigating to Canstar...');
     await page.goto(
       'https://www.canstarblue.com.au/electricity/compare/vic-electricity-plans/',
-      {
-        waitUntil: 'networkidle',
-        timeout: 60000
-      }
+      { waitUntil: 'domcontentloaded', timeout: 60000 }
     );
 
-    // Wait for SPA hydration signal
-    await page.waitForTimeout(2000);
+    await dismissOverlays(page);
 
-    console.log('2. Setting postcode...');
-    const postcodeSelector = 'input[placeholder*="postcode"], #postcode-selector';
-    await setPostcode(page, postcodeSelector, '3000');
+    // Allow SPA hydration
+    await page.waitForTimeout(3000);
 
-    console.log('3. Waiting for COMPARE to become interactive...');
-    const compareBtn = 'button:has-text("COMPARE"), .postcode-selector-submit';
+    await page.screenshot({ path: 'before-postcode.png', fullPage: true });
 
-    await page.waitForFunction(
-      sel => {
-        const btn = document.querySelector(sel);
-        return btn && !btn.disabled;
-      },
-      compareBtn,
-      { timeout: 30000 }
-    );
+    console.log('2. Locating postcode input...');
+    const postcodeHandle = await findPostcodeInput(page);
 
-    console.log('4. Clicking COMPARE...');
-    await page.click(compareBtn, { force: true });
+    if (!postcodeHandle) {
+      throw new Error('Postcode input not found');
+    }
 
-    console.log('5. Waiting for price results...');
+    console.log('3. Setting postcode...');
+    await setPostcode(page, postcodeHandle, '3000');
+
+    console.log('4. Waiting for COMPARE button...');
+    const compareSelector = 'button:has-text("COMPARE"), button[type="submit"]';
+
+    await page.waitForFunction(sel => {
+      const btn = document.querySelector(sel);
+      return btn && !btn.disabled;
+    }, compareSelector, { timeout: 30000 });
+
+    console.log('5. Clicking COMPARE...');
+    await page.click(compareSelector, { force: true });
+
+    console.log('6. Waiting for price results...');
     await page.waitForSelector('.annual-cost-value', {
       timeout: 90000
     });
 
     const results = await page.evaluate(() => {
-      const cards = Array.from(
-        document.querySelectorAll('div[class*="plan-card"]')
-      );
-
-      return cards.map(card => ({
-        brand:
-          card.querySelector('img')?.alt ||
-          'Unknown',
+      return Array.from(document.querySelectorAll('div[class*="plan"]')).map(card => ({
+        brand: card.querySelector('img')?.alt || 'Unknown',
         price:
           card.querySelector('.annual-cost-value')
             ?.innerText.replace(/[^0-9.]/g, '') || '0',
@@ -137,9 +130,9 @@ async function setPostcode(page, selector, postcode) {
       }));
     });
 
-    console.log(`✓ Success! Captured ${results.length} plans`);
+    console.log(`✓ Captured ${results.length} plans`);
 
-    const csvRows = results
+    const csv = results
       .map(r => `"${r.timestamp}","${r.brand}",${r.price}`)
       .join('\n');
 
@@ -147,11 +140,11 @@ async function setPostcode(page, selector, postcode) {
       fs.writeFileSync('data.csv', 'Timestamp,Brand,Price\n');
     }
 
-    fs.appendFileSync('data.csv', csvRows + '\n');
+    fs.appendFileSync('data.csv', csv + '\n');
 
-  } catch (error) {
-    console.error('❌ Script failed:', error.message);
-    await page.screenshot({ path: 'failure-debug.png', fullPage: true });
+  } catch (err) {
+    console.error('❌ Scraper failed:', err.message);
+    await page.screenshot({ path: 'fatal-error.png', fullPage: true });
     process.exit(1);
   } finally {
     await browser.close();
