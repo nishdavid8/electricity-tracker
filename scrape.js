@@ -3,51 +3,54 @@ const fs = require('fs');
 
 (async () => {
   const browser = await chromium.launch({ headless: true });
-  // Adding more "human" details to the browser identity
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 800 },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   });
   const page = await context.newPage();
   
   try {
-    console.log("1. Navigating to Canstar...");
+    console.log("1. Navigating to Canstar Blue...");
     await page.goto('https://www.canstarblue.com.au/electricity/compare/vic-electricity-plans/', { 
       waitUntil: 'networkidle',
       timeout: 60000 
     });
 
-    // 2. Target the postcode field using its common attributes
-    console.log("2. Looking for the postcode box...");
-    const input = page.locator('input[placeholder*="postcode"], input#postcode-selector').first();
-    await input.waitFor({ state: 'visible' });
+    console.log("2. Forcing postcode interaction...");
+    // Target the specific postcode input
+    const selector = 'input[placeholder*="postcode"], #postcode-selector';
+    await page.waitForSelector(selector);
     
-    // Click, then Fill (more reliable than 'type')
-    await input.click();
-    await input.fill('3000'); 
-    console.log("3. Postcode entered.");
+    // We use evaluate to bypass standard "typing" and force the value directly 
+    // into the website's internal state.
+    await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        el.value = '3000';
+        // These events "wake up" the website's internal logic
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+    }, selector);
 
-    // 4. Submit the form using the keyboard 'Enter' key
-    // This is often more reliable than clicking the button on interactive maps
-    await page.keyboard.press('Enter');
-    console.log("4. Enter key pressed. Waiting for results...");
+    console.log("3. Attempting to click COMPARE...");
+    // Some buttons are hidden behind overlays; we'll use a force-click
+    const compareBtn = 'button:has-text("COMPARE"), .postcode-selector-submit';
+    await page.click(compareBtn, { force: true });
 
-    // 5. Wait for the prices to appear
-    // We look for the "annual-cost-value" which only appears on the results page
+    console.log("4. Waiting for price results...");
+    // We increase timeout as the redirect can be slow
     await page.waitForSelector('.annual-cost-value', { timeout: 90000 });
 
     const results = await page.evaluate(() => {
-      const items = Array.from(document.querySelectorAll('div[class*="plan-card-v2_"]'));
-      return items.map(item => {
-        const brand = item.querySelector('img[class*="provider-logo_"]')?.alt || 'Unknown';
-        const price = item.querySelector('.annual-cost-value')?.innerText.replace(/[^0-9.]/g, '') || '0';
+      const cards = Array.from(document.querySelectorAll('div[class*="plan-card-v2_"]'));
+      return cards.map(card => {
+        const brand = card.querySelector('img[class*="provider-logo_"]')?.alt || 'Unknown';
+        const price = card.querySelector('.annual-cost-value')?.innerText.replace(/[^0-9.]/g, '') || '0';
         return { brand, price, timestamp: new Date().toISOString() };
       });
     });
 
-    console.log(`Success! Found ${results.length} plans.`);
+    console.log(`Success! Captured ${results.length} plans.`);
 
-    // 6. Save to CSV
     const csvRows = results.map(r => `"${r.timestamp}","${r.brand}",${r.price}`).join('\n');
     if (!fs.existsSync('data.csv')) {
       fs.writeFileSync('data.csv', 'Timestamp,Brand,Price\n');
@@ -55,9 +58,8 @@ const fs = require('fs');
     fs.appendFileSync('data.csv', csvRows + '\n');
 
   } catch (error) {
-    console.error("Scraper failed at step:", error.message);
-    // This screenshot will tell us if '3000' actually appeared in the box
-    await page.screenshot({ path: 'final-attempt-debug.png' });
+    console.error("Failed at step:", error.message);
+    await page.screenshot({ path: 'event-debug.png' }); 
     process.exit(1);
   } finally {
     await browser.close();
