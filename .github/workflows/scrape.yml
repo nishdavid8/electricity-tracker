@@ -2,8 +2,8 @@ name: Daily Electricity Scrape
 
 on:
   schedule:
-    - cron: '0 0 * * *' # This runs it automatically every night
-  workflow_dispatch: # This adds a "Run" button so you can test it manually
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -22,6 +22,14 @@ jobs:
 
       - name: Run Scraper
         run: node scrape.js
+
+      # NEW: This saves the screenshot so you can download it if it fails
+      - name: Upload Debug Screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: "*.png"
 
       - name: Commit and Push changes
         run: |
